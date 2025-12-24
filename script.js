@@ -1,41 +1,70 @@
+/**************************************************
+ * SOLMAS Giveaway Script (GLOBAL + Realtime)
+ * FIXES:
+ * 1) Spinner animation improved (realistic long spin + smooth ease + settle)
+ * 2) Admin spin now triggers animation on ALL clients (via global spinEvent)
+ **************************************************/
 
+// ================================
+// ADMIN (kept local)
+// ================================
 const ADMIN_PASSWORD_HASH = "267623a30c7aa711126cd873179b8dbb6a5ffb15b72055735f8a7e8cfda24be4";
 
+// Put your CA text here
 const CA_DISPLAY_TEXT = "YOUR_PUMPFUN_CA_OR_MINT_HERE";
 
 // Entries formula
 // 1% holding = 100 entries
 const ENTRIES_PER_1_PERCENT = 100;
 
-// 12 hour timer (manual roll only)
+// Default roll interval (12h) — admin can change globally
 const DEFAULT_ROLL_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
-// Slider width
-const ITEM_WIDTH = 150;
+// ================================
+// 🔥 FIREBASE (GLOBAL STORAGE)
+// NOTE: index.html must include:
+//  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+//  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+// ================================
+const firebaseConfig = {
+  apiKey: "AIzaSyDxuOQB76-GB-fOUdNaBDaQy8le-qyM-7Y",
+  authDomain: "solmas-c4d91.firebaseapp.com",
+  databaseURL: "https://solmas-c4d91-default-rtdb.firebaseio.com",
+  projectId: "solmas-c4d91",
+  storageBucket: "solmas-c4d91.firebasestorage.app",
+  messagingSenderId: "163418127180",
+  appId: "1:163418127180:web:ef8c16d7d072b69313ade9",
+  measurementId: "G-BMJMGPK82Z"
+};
 
-// ================================
-// STORAGE KEYS
-// ================================
-const KEY_ENTRIES = "giveaway.manualEntries";
-const KEY_SOL_GIVEN = "giveaway.solGiven";
-const KEY_SOL_GOAL = "giveaway.solGoal";
-const KEY_NEXT_ROLL = "giveaway.nextRollAt";
-const KEY_ROLL_INTERVAL_MS = "giveaway.rollIntervalMs";
-const KEY_LAST_WINNER = "giveaway.lastWinner";
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const sharedRef = db.ref("solmasGiveaway/state");
+const SV_TIME = firebase.database.ServerValue.TIMESTAMP;
 
 // ================================
 // STATE
 // ================================
 let state = {
+  // Local only
   isAdmin: false,
+  isSpinning: false,
+
+  // Shared (GLOBAL)
   solGiven: 0,
   solGoal: 25,
   nextRollAt: null,
   rollIntervalMs: DEFAULT_ROLL_INTERVAL_MS,
-  isSpinning: false,
-  entries: [],     // { wallet, percent, entries }
-  lastWinner: null // { wallet, percent, entries, ts, payoutTx? }
+  entries: [],      // { wallet, percent, entries }
+  lastWinner: null, // { wallet, percent, entries, ts, payoutTx? }
+
+  // NEW (GLOBAL): spin event to trigger animation on all clients
+  // spinEvent: { id, startedAt, durationMs, winnerWallet, winnerIndex, items:[{wallet,entries,percent?}] }
+  spinEvent: null
 };
+
+// Tracks last processed spin event on THIS client (local only)
+let lastSeenSpinEventId = null;
 
 // ================================
 // DOM
@@ -61,7 +90,7 @@ const els = {
   m: document.getElementById("minutes"),
   s: document.getElementById("seconds"),
 
-  // 12h roll timer
+  // Giveaway roll timer
   rollHH: document.getElementById("roll-hh"),
   rollMM: document.getElementById("roll-mm"),
   rollSS: document.getElementById("roll_ss"),
@@ -81,7 +110,7 @@ const els = {
   giveawayInput: document.getElementById("giveaway-input"),
   giveawayGoalInput: document.getElementById("giveaway-goal-input"),
 
-  // Timer controls
+  // Timer controls (admin)
   timerValue: document.getElementById("timer-value"),
   timerUnit: document.getElementById("timer-unit"),
   updateTimerBtn: document.getElementById("update-timer-btn"),
@@ -110,7 +139,7 @@ const els = {
 };
 
 // ================================
-// HASH HELPERS (obfuscation)
+// HASH HELPERS
 // ================================
 async function sha256Hex(str) {
   const bytes = new TextEncoder().encode(str);
@@ -126,26 +155,93 @@ async function verifyAdminPassword(input) {
 }
 
 // ================================
+// GLOBAL (Realtime) helpers
+// ================================
+function sharedSnapshotToState(remote) {
+  const isAdmin = state.isAdmin;
+  const isSpinning = state.isSpinning;
+
+  state = {
+    ...state,
+    solGiven: Number(remote.solGiven ?? 0),
+    solGoal: Number(remote.solGoal ?? 25),
+    nextRollAt: remote.nextRollAt ?? null,
+    rollIntervalMs: Number(remote.rollIntervalMs ?? DEFAULT_ROLL_INTERVAL_MS),
+    entries: Array.isArray(remote.entries) ? remote.entries : [],
+    lastWinner: remote.lastWinner ?? null,
+    spinEvent: remote.spinEvent ?? null
+  };
+
+  state.isAdmin = isAdmin;
+  state.isSpinning = isSpinning;
+}
+
+async function ensureRemoteInitialized() {
+  const snap = await sharedRef.get();
+  if (snap.exists()) return;
+
+  const initial = {
+    solGiven: 0,
+    solGoal: 25,
+    rollIntervalMs: DEFAULT_ROLL_INTERVAL_MS,
+    nextRollAt: Date.now() + DEFAULT_ROLL_INTERVAL_MS,
+    entries: [],
+    lastWinner: null,
+    spinEvent: null,
+    updatedAt: SV_TIME
+  };
+  await sharedRef.set(initial);
+}
+
+function saveShared(patch) {
+  const payload = {
+    ...patch,
+    updatedAt: SV_TIME
+  };
+  return sharedRef.update(payload);
+}
+
+// ================================
 // INIT
 // ================================
 document.addEventListener("DOMContentLoaded", init);
 
-function init() {
+async function init() {
   initSnowfall();
   initCursor();
   initChristmasCountdownUTC();
 
   if (els.caText) els.caText.innerText = CA_DISPLAY_TEXT;
 
-  loadGiveawayProgress();
-    loadRollInterval();
-loadEntries();
-  loadOrCreateNextRoll();
-  loadLastWinner();
+  await ensureRemoteInitialized();
 
-  updateGiveawayUI();
-  updateEntriesUI();
-  renderSlider();
+  sharedRef.on("value", (snap) => {
+    if (!snap.exists()) return;
+
+    const prevSpinId = state.spinEvent?.id ?? null;
+
+    sharedSnapshotToState(snap.val() || {});
+
+    // Reflect remote in UI
+    updateGiveawayUI();
+    updateEntriesUI();
+    renderSlider();
+    renderEntriesTable();
+    updateTimerCurrentUI();
+    if (state.lastWinner) renderWinner(state.lastWinner);
+    updateRollCountdown();
+
+    // ✅ NEW: trigger spin animation for everyone
+    // If spinEvent changed (or first time) -> animate locally
+    const newSpinId = state.spinEvent?.id ?? null;
+    if (newSpinId && newSpinId !== lastSeenSpinEventId) {
+      lastSeenSpinEventId = newSpinId;
+      runSpinEvent(state.spinEvent);
+    } else if (newSpinId && newSpinId !== prevSpinId && newSpinId !== lastSeenSpinEventId) {
+      lastSeenSpinEventId = newSpinId;
+      runSpinEvent(state.spinEvent);
+    }
+  });
 
   setInterval(updateRollCountdown, 1000);
   updateRollCountdown();
@@ -185,24 +281,10 @@ async function handleLogin() {
     if (els.giveawayInput) els.giveawayInput.value = state.solGiven;
     if (els.giveawayGoalInput) els.giveawayGoalInput.value = state.solGoal;
 
-    // Prefill timer controls
     try {
       const ms = state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS;
-      if (els.timerCurrent) els.timerCurrent.textContent = formatMs(ms);
-
-      if (els.timerValue && els.timerUnit) {
-        // choose largest clean unit
-        if (ms % (60 * 60 * 1000) === 0) {
-          els.timerUnit.value = "hours";
-          els.timerValue.value = String(ms / (60 * 60 * 1000));
-        } else if (ms % (60 * 1000) === 0) {
-          els.timerUnit.value = "minutes";
-          els.timerValue.value = String(ms / (60 * 1000));
-        } else {
-          els.timerUnit.value = "seconds";
-          els.timerValue.value = String(Math.round(ms / 1000));
-        }
-      }
+      updateTimerInputsFromMs(ms);
+      updateTimerCurrentUI();
     } catch {}
 
     setAdminTab("controls");
@@ -224,7 +306,6 @@ function setAdminTab(which) {
 // EVENTS
 // ================================
 function setupEvents() {
-  // Admin open/close
   const trigger = document.getElementById("admin-trigger");
   trigger && (trigger.onclick = toggleAdmin);
 
@@ -234,7 +315,6 @@ function setupEvents() {
   const loginBtn = document.getElementById("login-btn");
   loginBtn && (loginBtn.onclick = () => handleLogin());
 
-  // Tabs
   els.tabControls && (els.tabControls.onclick = () => setAdminTab("controls"));
   els.tabEntries &&
     (els.tabEntries.onclick = () => {
@@ -242,10 +322,15 @@ function setupEvents() {
       renderEntriesTable();
     });
 
-  // Entries: add/update
+  // Entries add/update (GLOBAL)
   const addEntryBtn = document.getElementById("add-entry-btn");
   addEntryBtn &&
-    (addEntryBtn.onclick = () => {
+    (addEntryBtn.onclick = async () => {
+      if (!state.isAdmin) {
+        alert("Admin only. Login first.");
+        return;
+      }
+
       const wallet = (els.entryWallet?.value || "").trim();
       const percent = parseFloat(els.entryPercent?.value);
 
@@ -262,31 +347,28 @@ function setupEvents() {
       const idx = state.entries.findIndex((e) => e.wallet === wallet);
       const record = { wallet, percent, entries };
 
-      if (idx >= 0) state.entries[idx] = record;
-      else state.entries.push(record);
+      const newEntries = [...state.entries];
+      if (idx >= 0) newEntries[idx] = record;
+      else newEntries.push(record);
 
-      saveEntries();
-      updateEntriesUI();
-      renderSlider();
-      renderEntriesTable();
+      await saveShared({ entries: newEntries });
 
       if (els.entryWallet) els.entryWallet.value = "";
       if (els.entryPercent) els.entryPercent.value = "";
     });
 
-  // Entries: clear all
+  // Entries clear all (GLOBAL)
   const clearEntriesBtn = document.getElementById("clear-entries-btn");
   clearEntriesBtn &&
-    (clearEntriesBtn.onclick = () => {
+    (clearEntriesBtn.onclick = async () => {
+      if (!state.isAdmin) {
+        alert("Admin only. Login first.");
+        return;
+      }
       if (!confirm("Clear ALL manual entries?")) return;
-      state.entries = [];
-      saveEntries();
-      updateEntriesUI();
-      renderSlider();
-      renderEntriesTable();
+      await saveShared({ entries: [], lastWinner: null });
     });
 
-  // Entries: search
   els.entriesSearch && els.entriesSearch.addEventListener("input", renderEntriesTable);
 
   // Roll now (admin)
@@ -296,59 +378,77 @@ function setupEvents() {
   // Reset timer (admin)
   const resetTimerBtn = document.getElementById("reset-timer-btn");
   resetTimerBtn &&
-    (resetTimerBtn.onclick = () => {
+    (resetTimerBtn.onclick = async () => {
+      if (!state.isAdmin) {
+        alert("Admin only. Login first.");
+        return;
+      }
       if (!confirm("Reset giveaway timer back to 12 hours?")) return;
-      resetNextRoll();
-      updateRollCountdown();
-      alert("Timer reset to 12 hours.");
+
+      const ms = DEFAULT_ROLL_INTERVAL_MS;
+      await saveShared({
+        rollIntervalMs: ms,
+        nextRollAt: Date.now() + ms
+      });
+
+      updateTimerInputsFromMs(ms);
+      updateTimerCurrentUI();
+      alert("Timer reset to 12 hours ✅");
     });
 
-  // Update giveaway progress (admin)
+  // Update giveaway progress (admin) — GLOBAL
   const updateGiveawayBtn = document.getElementById("update-giveaway-btn");
   updateGiveawayBtn &&
-    (updateGiveawayBtn.onclick = () => {
+    (updateGiveawayBtn.onclick = async () => {
+      if (!state.isAdmin) {
+        alert("Admin only. Login first.");
+        return;
+      }
+
       const given = parseFloat(els.giveawayInput?.value);
-
-  // ✅ Update timer length (admin)
-  const updateTimerBtn = document.getElementById("update-timer-btn");
-  updateTimerBtn && (updateTimerBtn.onclick = async () => {
-    if (!state.isAdmin) {
-      alert("Admin only. Open admin panel and login first.");
-      return;
-    }
-
-    const val = parseInt(els.timerValue?.value, 10);
-    const unit = (els.timerUnit?.value || "minutes").toLowerCase();
-
-    if (!Number.isFinite(val) || val <= 0) {
-      alert("Enter a valid timer value (e.g. 10).");
-      return;
-    }
-
-    let ms = val * 1000;
-    if (unit === "minutes") ms = val * 60 * 1000;
-    if (unit === "hours") ms = val * 60 * 60 * 1000;
-
-    // minimum 10 seconds to avoid nonsense
-    ms = Math.max(ms, 10 * 1000);
-
-    saveRollInterval(ms);
-
-    // reset countdown using new interval
-    resetNextRoll();
-    updateRollCountdown();
-    alert(`Timer updated: ${formatMs(ms)} ✅`);
-  });
       const goal = parseFloat(els.giveawayGoalInput?.value);
 
-      if (Number.isFinite(given)) state.solGiven = Math.max(0, given);
-      if (Number.isFinite(goal)) state.solGoal = Math.max(0.1, goal);
+      const patch = {};
+      if (Number.isFinite(given)) patch.solGiven = Math.max(0, given);
+      if (Number.isFinite(goal)) patch.solGoal = Math.max(0.1, goal);
 
-      saveGiveawayProgress();
-      updateGiveawayUI();
+      await saveShared(patch);
+      alert("Giveaway progress updated ✅");
     });
 
-  // ✅ Front-page confirm payout (password -> tx)
+  // Update timer length (admin) — GLOBAL
+  const updateTimerBtn = document.getElementById("update-timer-btn");
+  updateTimerBtn &&
+    (updateTimerBtn.onclick = async () => {
+      if (!state.isAdmin) {
+        alert("Admin only. Login first.");
+        return;
+      }
+
+      const val = parseInt(els.timerValue?.value, 10);
+      const unit = (els.timerUnit?.value || "minutes").toLowerCase();
+
+      if (!Number.isFinite(val) || val <= 0) {
+        alert("Enter a valid timer value (e.g. 10).");
+        return;
+      }
+
+      let ms = val * 1000;
+      if (unit === "minutes") ms = val * 60 * 1000;
+      if (unit === "hours") ms = val * 60 * 60 * 1000;
+
+      ms = Math.max(ms, 10 * 1000);
+
+      await saveShared({
+        rollIntervalMs: ms,
+        nextRollAt: Date.now() + ms
+      });
+
+      updateTimerCurrentUI();
+      alert(`Timer updated: ${formatMs(ms)} ✅`);
+    });
+
+  // Confirm payout (GLOBAL)
   if (els.confirmPayoutBtn) {
     els.confirmPayoutBtn.onclick = async () => {
       if (!state.lastWinner) {
@@ -369,9 +469,8 @@ function setupEvents() {
         return;
       }
 
-      state.lastWinner.payoutTx = cleanTx;
-      saveLastWinner();
-      renderWinner(state.lastWinner);
+      const updatedWinner = { ...(state.lastWinner || {}), payoutTx: cleanTx };
+      await saveShared({ lastWinner: updatedWinner });
       alert("Payout confirmed ✅");
     };
   }
@@ -429,13 +528,15 @@ function renderEntriesTable() {
     const btn = document.createElement("button");
     btn.className = "mini-btn interactive";
     btn.textContent = "Remove";
-    btn.onclick = () => {
+    btn.onclick = async () => {
+      if (!state.isAdmin) {
+        alert("Admin only. Login first.");
+        return;
+      }
       if (!confirm(`Remove ${e.wallet}?`)) return;
-      state.entries = state.entries.filter((x) => x.wallet !== e.wallet);
-      saveEntries();
-      updateEntriesUI();
-      renderSlider();
-      renderEntriesTable();
+
+      const newEntries = state.entries.filter((x) => x.wallet !== e.wallet);
+      await saveShared({ entries: newEntries });
     };
     tdA.appendChild(btn);
 
@@ -450,31 +551,14 @@ function renderEntriesTable() {
   if (els.entriesSummary) {
     const wallets = state.entries.length;
     const total = state.entries.reduce((s, e) => s + (e.entries || 0), 0);
-    els.entriesSummary.textContent = `Wallets: ${wallets.toLocaleString()} • Total entries: ${total.toLocaleString()}`;
+    els.entriesSummary.textContent =
+      `Wallets: ${wallets.toLocaleString()} • Total entries: ${total.toLocaleString()}`;
   }
 }
 
 // ================================
-
+// TIMER LENGTH UI
 // ================================
-// TIMER LENGTH (ADMIN EDITABLE)
-// ================================
-function loadRollInterval() {
-  const saved = parseInt(localStorage.getItem(KEY_ROLL_INTERVAL_MS), 10);
-  if (Number.isFinite(saved) && saved >= 1000) {
-    state.rollIntervalMs = saved;
-  } else {
-    state.rollIntervalMs = DEFAULT_ROLL_INTERVAL_MS;
-  }
-  updateTimerCurrentUI();
-}
-
-function saveRollInterval(ms) {
-  state.rollIntervalMs = ms;
-  localStorage.setItem(KEY_ROLL_INTERVAL_MS, String(ms));
-  updateTimerCurrentUI();
-}
-
 function formatMs(ms) {
   ms = Math.max(0, Number(ms) || 0);
   const s = Math.round(ms / 1000);
@@ -485,11 +569,30 @@ function formatMs(ms) {
   return `${h} hours`;
 }
 
-function updateTimerCurrentUI() {
-  const el = document.getElementById("timer-current");
-  if (el) el.textContent = formatMs(state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS);
+function updateTimerInputsFromMs(ms) {
+  if (!els.timerValue || !els.timerUnit) return;
+
+  ms = Number(ms) || DEFAULT_ROLL_INTERVAL_MS;
+
+  if (ms % (60 * 60 * 1000) === 0) {
+    els.timerUnit.value = "hours";
+    els.timerValue.value = String(ms / (60 * 60 * 1000));
+  } else if (ms % (60 * 1000) === 0) {
+    els.timerUnit.value = "minutes";
+    els.timerValue.value = String(ms / (60 * 1000));
+  } else {
+    els.timerUnit.value = "seconds";
+    els.timerValue.value = String(Math.max(1, Math.round(ms / 1000)));
+  }
 }
 
+function updateTimerCurrentUI() {
+  if (els.timerCurrent) {
+    els.timerCurrent.textContent = formatMs(state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS);
+  }
+}
+
+// ================================
 // GIVEAWAY PROGRESS
 // ================================
 function updateGiveawayUI() {
@@ -501,58 +604,21 @@ function updateGiveawayUI() {
   els.giveFill.style.width = `${pct}%`;
 }
 
-function saveGiveawayProgress() {
-  localStorage.setItem(KEY_SOL_GIVEN, String(state.solGiven));
-  localStorage.setItem(KEY_SOL_GOAL, String(state.solGoal));
-}
-
-function loadGiveawayProgress() {
-  const sg = parseFloat(localStorage.getItem(KEY_SOL_GIVEN));
-  const goal = parseFloat(localStorage.getItem(KEY_SOL_GOAL));
-  if (Number.isFinite(sg)) state.solGiven = sg;
-  if (Number.isFinite(goal)) state.solGoal = goal;
-}
-
 // ================================
-// ENTRIES STORAGE + STATUS
+// ENTRIES STATUS
 // ================================
-function saveEntries() {
-  localStorage.setItem(KEY_ENTRIES, JSON.stringify(state.entries));
-}
-
-function loadEntries() {
-  const raw = localStorage.getItem(KEY_ENTRIES);
-  if (!raw) return;
-  try {
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) state.entries = arr;
-  } catch {}
-}
-
 function updateEntriesUI() {
   const wallets = state.entries.length;
   const totalEntries = state.entries.reduce((s, e) => s + (e.entries || 0), 0);
   if (els.entriesStatus) {
-    els.entriesStatus.innerText = `Wallets: ${wallets.toLocaleString()} • Total entries: ${totalEntries.toLocaleString()}`;
+    els.entriesStatus.innerText =
+      `Wallets: ${wallets.toLocaleString()} • Total entries: ${totalEntries.toLocaleString()}`;
   }
 }
 
 // ================================
 // LAST WINNER + PAYOUT TX
 // ================================
-function saveLastWinner() {
-  localStorage.setItem(KEY_LAST_WINNER, JSON.stringify(state.lastWinner));
-}
-
-function loadLastWinner() {
-  const raw = localStorage.getItem(KEY_LAST_WINNER);
-  if (!raw) return;
-  try {
-    state.lastWinner = JSON.parse(raw);
-    if (state.lastWinner) renderWinner(state.lastWinner);
-  } catch {}
-}
-
 function renderWinner(w) {
   if (!els.winnerDisplay) return;
 
@@ -580,25 +646,8 @@ function renderWinner(w) {
 }
 
 // ================================
-// 12 HOUR TIMER (NO AUTO ROLL)
+// GIVEAWAY TIMER (GLOBAL)
 // ================================
-function loadOrCreateNextRoll() {
-  const saved = localStorage.getItem(KEY_NEXT_ROLL);
-  const parsed = saved ? parseInt(saved, 10) : NaN;
-
-  if (Number.isFinite(parsed) && parsed > Date.now() - (state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS)) {
-    state.nextRollAt = parsed;
-  } else {
-    resetNextRoll();
-  }
-}
-
-function resetNextRoll() {
-  state.nextRollAt = Date.now() + (state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS);
-  localStorage.setItem(KEY_NEXT_ROLL, String(state.nextRollAt));
-}
-
-
 function updateRollCountdown() {
   if (!state.nextRollAt) return;
 
@@ -618,9 +667,161 @@ function updateRollCountdown() {
 }
 
 // ================================
-// ROLL GIVEAWAY (MANUAL, WEIGHTED)
+// SLIDER BASE RENDER
 // ================================
-function rollGiveawayManual() {
+function renderSlider() {
+  if (!els.track) return;
+
+  const sorted = [...state.entries].sort((a, b) => (b.entries || 0) - (a.entries || 0));
+  const top = sorted.slice(0, 200);
+  const renderList = [...top, ...top, ...top];
+
+  els.track.innerHTML = "";
+  renderList.forEach((e) => {
+    const item = document.createElement("div");
+    item.className = "slider-item";
+    item.innerHTML = `
+      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
+      <div class="small monospace">${e.entries} entries</div>
+    `;
+    els.track.appendChild(item);
+  });
+
+  els.track.style.transform = "translateX(0px)";
+  els.track.style.transition = "none";
+}
+
+/* ================================
+ * ✅ NEW GLOBAL SPIN EVENT SYSTEM
+ * - Admin writes spinEvent to Firebase
+ * - Every client sees spinEvent.id change -> runs animation locally
+ ================================ */
+
+function makeSpinEvent(winner, durationMs = 7200) {
+  // Build a "reel" that looks random but ends on winner
+  const pool = [...state.entries];
+  const SPIN_ITEMS = 140;
+  const WIN_INDEX = 110;
+
+  const items = [];
+  for (let i = 0; i < SPIN_ITEMS; i++) {
+    const pick = (i === WIN_INDEX)
+      ? winner
+      : pool[Math.floor(Math.random() * pool.length)];
+    // store minimal data needed for UI
+    items.push({ wallet: pick.wallet, entries: pick.entries, percent: pick.percent });
+  }
+
+  return {
+    id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    startedAt: Date.now(),
+    durationMs,
+    winnerWallet: winner.wallet,
+    winnerIndex: WIN_INDEX,
+    items
+  };
+}
+
+function runSpinEvent(ev) {
+  if (!ev || !els.track) return;
+
+  // If user loads mid-spin, run remaining time (or snap if almost done)
+  const now = Date.now();
+  const endAt = (ev.startedAt || now) + (ev.durationMs || 7000);
+  const remaining = Math.max(0, endAt - now);
+
+  // Rebuild reel exactly as admin published it
+  els.track.innerHTML = "";
+  for (let i = 0; i < ev.items.length; i++) {
+    const e = ev.items[i];
+    const item = document.createElement("div");
+    item.className = "slider-item";
+    if (i === ev.winnerIndex) item.id = "spin-target";
+    item.innerHTML = `
+      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
+      <div class="small monospace">${e.entries} entries</div>
+    `;
+    els.track.appendChild(item);
+  }
+
+  // Reset
+  els.track.style.transition = "none";
+  els.track.style.transform = "translateX(0px)";
+  els.track.offsetHeight;
+
+  const windowEl = document.querySelector(".slider-window");
+  const targetEl = document.getElementById("spin-target");
+  if (!windowEl || !targetEl) return;
+
+  // Measure true step (handles CSS gap/margins/responsive)
+  const all = els.track.querySelectorAll(".slider-item");
+  let step = 0;
+  if (all.length >= 2) step = Math.round(all[1].offsetLeft - all[0].offsetLeft);
+  if (!step) step = all[0].offsetWidth || 150;
+
+  const targetWidth = targetEl.offsetWidth || step;
+  const centerOffset = (windowEl.offsetWidth / 2) - (targetWidth / 2);
+
+  const finalTranslate = Math.round(-(ev.winnerIndex * step) + centerOffset);
+
+  // Better animation: long glide + micro-settle
+  // If joining late, shorten to remaining time
+  const mainTime = Math.max(300, Math.min(5600, remaining ? Math.min(5600, remaining - 650) : 5600));
+  const settleTime = Math.max(180, Math.min(650, remaining ? Math.min(650, remaining) : 650));
+
+  // Overshoot for realism
+  const overshoot = Math.round((Math.random() * 120) + 80) * (Math.random() < 0.5 ? -1 : 1);
+  const overshootTranslate = finalTranslate + overshoot;
+
+  // Hide winner card display while spinning (client-side visual)
+  els.winnerDisplay?.classList.remove("opacity-1");
+  els.winnerDisplay?.classList.add("opacity-0");
+
+  // If almost over, snap
+  if (remaining && remaining < 350) {
+    els.track.style.transition = "none";
+    els.track.style.transform = `translateX(${finalTranslate}px)`;
+    highlightTargetAndWinner();
+    return;
+  }
+
+  // Main spin
+  requestAnimationFrame(() => {
+    els.track.style.transition = `transform ${mainTime}ms cubic-bezier(0.08, 0.86, 0.12, 1)`;
+    els.track.style.transform = `translateX(${overshootTranslate}px)`;
+  });
+
+  // Settle
+  setTimeout(() => {
+    els.track.style.transition = `transform ${settleTime}ms cubic-bezier(0.20, 1.05, 0.22, 1)`;
+    els.track.style.transform = `translateX(${finalTranslate}px)`;
+  }, mainTime);
+
+  // Reveal/highlight
+  setTimeout(() => {
+    highlightTargetAndWinner();
+  }, mainTime + settleTime + 40);
+
+  function highlightTargetAndWinner() {
+    const t = document.getElementById("spin-target");
+    if (t) {
+      t.style.background = "rgba(0,255,186,0.22)";
+      t.style.boxShadow = "0 0 24px rgba(0,255,186,0.45)";
+    }
+    // winner card shows from global lastWinner (already synced),
+    // but force show if available
+    if (state.lastWinner) renderWinner(state.lastWinner);
+  }
+}
+
+// ================================
+// ROLL GIVEAWAY (MANUAL, WEIGHTED) — GLOBAL + ANIMATES EVERYONE
+// ================================
+async function rollGiveawayManual() {
+  if (!state.isAdmin) {
+    alert("Admin only. Login first.");
+    return;
+  }
   if (state.isSpinning) return;
 
   if (!state.entries.length) {
@@ -648,128 +849,28 @@ function rollGiveawayManual() {
   }
   if (!winner) winner = state.entries[state.entries.length - 1];
 
-  spinSliderToWinner(winner);
+  // Create global spin event (this makes ALL clients animate)
+  const spinEvent = makeSpinEvent(winner, 7200);
 
-  state.lastWinner = {
+  // Save winner globally + reset nextRollAt + publish spinEvent
+  const newWinner = {
     wallet: winner.wallet,
     percent: winner.percent,
     entries: winner.entries,
     ts: Date.now(),
     payoutTx: null
   };
-  saveLastWinner();
 
-  // reset cycle after manual roll
-  resetNextRoll();
+  const ms = state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS;
 
-  setTimeout(() => {
-    state.isSpinning = false;
-  }, 6400);
-}
-
-// ================================
-// SLIDER
-// ================================
-function renderSlider() {
-  if (!els.track) return;
-
-  const sorted = [...state.entries].sort((a, b) => (b.entries || 0) - (a.entries || 0));
-  const top = sorted.slice(0, 200);
-  const renderList = [...top, ...top, ...top];
-
-  els.track.innerHTML = "";
-  renderList.forEach((e) => {
-    const item = document.createElement("div");
-    item.className = "slider-item";
-    item.innerHTML = `
-      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
-      <div class="small monospace">${e.entries} entries</div>
-    `;
-    els.track.appendChild(item);
+  await saveShared({
+    lastWinner: newWinner,
+    nextRollAt: Date.now() + ms,
+    spinEvent
   });
 
-  els.track.style.transform = "translateX(0px)";
-}
-
-function spinSliderToWinner(winner) {
-  if (!els.track) return;
-
-  // Hide winner display while spinning
-  els.winnerDisplay?.classList.remove("opacity-1");
-  els.winnerDisplay?.classList.add("opacity-0");
-
-  // Build a realistic reel with the winner placed at a known index
-  const pool = [...state.entries]
-    .sort((a, b) => (b.entries || 0) - (a.entries || 0))
-    .slice(0, 500);
-
-  const items = [];
-  for (let i = 0; i < 40; i++) items.push(pool[Math.floor(Math.random() * pool.length)]);
-  const WIN_INDEX = items.length;
-  items.push(winner); // exact target
-  for (let i = 0; i < 6; i++) items.push(pool[Math.floor(Math.random() * pool.length)]);
-
-  // Render
-  els.track.innerHTML = "";
-  items.forEach((e, idx) => {
-    const item = document.createElement("div");
-    item.className = "slider-item";
-    if (idx === WIN_INDEX) item.id = "spin-target";
-    item.innerHTML = `
-      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
-      <div class="small monospace">${e.entries} entries</div>
-    `;
-    els.track.appendChild(item);
-  });
-
-  const windowEl = document.querySelector(".slider-window");
-  const viewWidth = windowEl ? windowEl.clientWidth : 600;
-
-  // IMPORTANT: compute real center positions (no fixed ITEM_WIDTH)
-  const targetEl = document.getElementById("spin-target");
-  if (!targetEl) return;
-
-  // Start at 0
-  els.track.style.transition = "none";
-  els.track.style.transform = "translateX(0px)";
-  els.track.offsetHeight; // force reflow
-
-  // Desired translate so target is centered in window
-  const targetCenter = targetEl.offsetLeft + (targetEl.offsetWidth / 2);
-  const desiredCenter = viewWidth / 2;
-  const finalTranslate = Math.round(desiredCenter - targetCenter);
-
-  // Overshoot a bit for realism, then settle back
-  const overshoot = Math.round((Math.random() * 60) + 30) * (Math.random() < 0.5 ? -1 : 1);
-  const overshootTranslate = finalTranslate + overshoot;
-
-  // Main spin
-  requestAnimationFrame(() => {
-    els.track.style.transition = "transform 5.6s cubic-bezier(0.08, 0.85, 0.12, 1)";
-    els.track.style.transform = `translateX(${overshootTranslate}px)`;
-  });
-
-  // Settle
-  setTimeout(() => {
-    els.track.style.transition = "transform 0.65s cubic-bezier(0.2, 1, 0.2, 1)";
-    els.track.style.transform = `translateX(${finalTranslate}px)`;
-  }, 5600);
-
-  // Show winner + highlight target
-  setTimeout(() => {
-    renderWinner({
-      wallet: winner.wallet,
-      percent: winner.percent,
-      entries: winner.entries,
-      payoutTx: state.lastWinner?.payoutTx || null
-    });
-
-    const t = document.getElementById("spin-target");
-    if (t) {
-      t.style.background = "rgba(0,255,186,0.2)";
-      t.style.boxShadow = "0 0 20px rgba(0,255,186,0.35)";
-    }
-  }, 6300);
+  // Locally mark as not spinning after animation time
+  setTimeout(() => { state.isSpinning = false; }, 8000);
 }
 
 // ================================
@@ -780,7 +881,6 @@ function initChristmasCountdownUTC() {
     const now = new Date();
     const year = now.getUTCFullYear();
 
-    // Dec 25 00:00:00 UTC
     let target = new Date(Date.UTC(year, 11, 25, 0, 0, 0));
     if (now.getTime() > target.getTime()) {
       target = new Date(Date.UTC(year + 1, 11, 25, 0, 0, 0));
