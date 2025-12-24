@@ -9,10 +9,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
-
-  <!-- ✅ Firebase (Realtime Database) -->
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 
 <body>
@@ -93,7 +89,7 @@
           <a id="winner-tx-link" class="text-neon monospace" href="#" target="_blank" rel="noreferrer">—</a>
         </div>
 
-        <!-- confirm payout on the main front page -->
+        <!-- NEW: confirm payout on the main front page -->
         <div class="margin-top">
           <button id="confirm-payout-btn" class="btn-neon interactive width-full">
             Confirm Payout (Admin)
@@ -179,7 +175,22 @@
           <h3 class="text-white">Giveaway Roll</h3>
           <p class="text-dim small margin-bottom">Rolling is manual.</p>
           <button id="roll-now-btn" class="btn-gold interactive width-full">ROLL NOW</button>
-          <button id="reset-timer-btn" class="btn-red interactive width-full margin-top">Reset Giveaway Timer (12h)</button>
+          <button id="reset-timer-btn" class="btn-red interactive width-full margin-top">Reset Giveaway Timer</button>
+
+          <!-- ✅ NEW: Change Giveaway Timer Length -->
+          <div class="margin-top">
+            <p class="text-dim small margin-bottom">Change timer length (applies to next reset/roll)</p>
+            <div class="grid-2 margin-bottom">
+              <input id="timer-value" type="number" min="1" step="1" placeholder="Value (e.g. 10)" class="input-dark interactive">
+              <select id="timer-unit" class="input-dark interactive">
+                <option value="seconds">Seconds</option>
+                <option value="minutes" selected>Minutes</option>
+                <option value="hours">Hours</option>
+              </select>
+            </div>
+            <button id="update-timer-btn" class="btn-neon interactive width-full">Update Timer Length</button>
+            <p class="text-dim small margin-top opacity-50">Current timer: <span id="timer-current" class="text-white">—</span></p>
+          </div>
 
           <hr style="opacity:.2; margin:16px 0;">
 
