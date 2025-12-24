@@ -11,7 +11,7 @@
 const ADMIN_PASSWORD_HASH = "267623a30c7aa711126cd873179b8dbb6a5ffb15b72055735f8a7e8cfda24be4";
 
 // Put your CA text here
-const CA_DISPLAY_TEXT = "YOUR_PUMPFUN_CA_OR_MINT_HERE";
+const CA_DISPLAY_TEXT = "23dq9RgV7Rsq61WYZSADLqpVdJAmo4eTS44TeESKpump";
 
 // Entries formula
 // 1% holding = 100 entries
@@ -1014,3 +1014,4 @@ function shortenWallet(w) {
   if (!w) return "—";
   return `${w.slice(0, 4)}…${w.slice(-4)}`;
 }
+
