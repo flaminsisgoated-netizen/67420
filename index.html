@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOLMAS | Christmas Giveaway</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <canvas id="snow-canvas"></canvas>
+  <div id="cursor-dot" class="cursor-dot"></div>
+  <div id="cursor-trail" class="cursor-trail"></div>
+
+  <main class="container">
+    <section class="hero-section flex-center column text-center">
+      <h1 class="title text-neon pulse-glow">SOLMAS</h1>
+      <p class="subtitle text-dim">Time Until Christmas Magic ✨ (UTC)</p>
+
+      <div id="countdown" class="countdown-grid margin-bottom">
+        <div class="time-card">
+          <span id="days" class="time-value text-red">00</span>
+          <span class="time-label">DAYS</span>
+        </div>
+        <div class="time-card">
+          <span id="hours" class="time-value">00</span>
+          <span class="time-label">HOURS</span>
+        </div>
+        <div class="time-card">
+          <span id="minutes" class="time-value text-red">00</span>
+          <span class="time-label">MINUTES</span>
+        </div>
+        <div class="time-card">
+          <span id="seconds" class="time-value">00</span>
+          <span class="time-label">SECONDS</span>
+        </div>
+      </div>
+
+      <div id="ca-pill" class="ca-pill interactive">
+        <span class="text-dim small">CA:</span>
+        <span id="ca-text" class="monospace text-white">token_mint_here</span>
+        <span id="copy-icon">⧉</span>
+      </div>
+    </section>
+
+    <section class="slider-section margin-top relative">
+      <div class="slider-window border-neon relative">
+        <div class="selector-line"></div>
+        <div id="slider-track" class="slider-track"></div>
+      </div>
+
+      <div class="roll-timer-card margin-top text-center">
+        <p class="text-dim small">Next Giveaway Roll In</p>
+        <div class="roll-time">
+          <span id="roll-hh" class="roll-value">12</span><span class="roll-sep">:</span>
+          <span id="roll-mm" class="roll-value">00</span><span class="roll-sep">:</span>
+          <span id="roll_ss" class="roll-value">00</span>
+        </div>
+
+        <p class="text-dim small margin-top">
+          <span class="text-white bold">1% holding = 100 entries</span>
+          <span class="opacity-50"> (admin enters holders manually)</span>
+        </p>
+
+        <p id="entries-status" class="text-dim small margin-top">Loading entries…</p>
+      </div>
+
+      <!-- WINNER CARD -->
+      <div id="winner-display" class="winner-display opacity-0 margin-top text-center">
+        <p class="text-gold uppercase small tracking-wide">Winner Selected</p>
+        <h2 id="winner-name" class="text-white text-xlarge pulse-glow">---</h2>
+        <p id="winner-wallet" class="monospace text-dim">---</p>
+
+        <p class="margin-top small">
+          Entries at win:
+          <span id="winner-entries" class="text-neon bold">0</span>
+        </p>
+        <p class="margin-top small">
+          Holding at win:
+          <span id="winner-percent" class="text-red bold">0%</span>
+        </p>
+
+        <div id="winner-tx-wrap" class="margin-top small" style="display:none;">
+          <span class="text-dim">Payout Tx:</span>
+          <a id="winner-tx-link" class="text-neon monospace" href="#" target="_blank" rel="noreferrer">—</a>
+        </div>
+
+        <!-- NEW: confirm payout on the main front page -->
+        <div class="margin-top">
+          <button id="confirm-payout-btn" class="btn-neon interactive width-full">
+            Confirm Payout (Admin)
+          </button>
+          <p class="text-dim small margin-top opacity-50">
+            Admin will be asked for password + transaction hash.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="dashboard-grid margin-top">
+      <div class="stat-card">
+        <div class="card-header flex-row space-between">
+          <h3 class="text-white">SOL Giveaway Progress 🎁</h3>
+          <span class="icon text-red">🎁</span>
+        </div>
+
+        <p class="text-dim small margin-bottom">
+          Tracks how much SOL has been given away so far (admin editable).
+        </p>
+
+        <div class="progress-container">
+          <div class="progress-bar">
+            <div id="giveaway-fill" class="progress-fill" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="flex-row space-between margin-top small">
+          <span id="giveaway-percent" class="text-red bold text-large">0%</span>
+          <span class="text-dim"><span id="giveaway-current" class="text-white">0</span> / <span id="giveaway-goal">25</span> SOL</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="card-header flex-row space-between">
+          <h3 class="text-white">Market Cap 📈</h3>
+          <span class="status-dot"></span>
+        </div>
+        <div class="flex-center column height-full">
+          <h2 id="mcap-value" class="text-gold text-xlarge margin-bottom">$0.00</h2>
+          <p id="price-change" class="text-neon small">—</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="search-section flex-center column margin-top padding-bottom">
+      <p class="text-dim small margin-bottom">Check your Pump.fun profile</p>
+      <form id="search-form" class="relative width-full max-width-500">
+        <input type="text" id="search-input" class="interactive search-input" placeholder="Enter wallet address…">
+        <button type="submit" class="search-btn interactive">🔍</button>
+      </form>
+    </div>
+  </main>
+
+  <footer>
+    <div class="flex-center gap-20 margin-bottom">
+      <a href="https://x.com/xmasforsol" class="interactive text-neon">Twitter / X</a>
+      <a href="" class="interactive text-gold">DexScreener</a>
+    </div>
+    <p class="opacity-50 small">SOLMAS is a meme token for entertainment purposes only.</p>
+  </footer>
+
+  <!-- Admin Modal -->
+  <div id="admin-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <button id="close-admin" class="close-btn interactive">✕</button>
+      <h2 class="text-neon margin-bottom">Admin Panel</h2>
+
+      <div id="login-step">
+        <input type="password" id="admin-password" placeholder="Enter Password" class="input-dark interactive">
+        <button id="login-btn" class="btn-neon margin-top interactive">Login</button>
+        <p id="login-error" class="text-red hidden margin-top">Invalid Password</p>
+      </div>
+
+      <div id="admin-controls" class="hidden">
+        <div class="admin-tabs">
+          <button id="tab-controls" class="tab-btn active interactive">Controls</button>
+          <button id="tab-entries" class="tab-btn interactive">Entries</button>
+        </div>
+
+        <div id="panel-controls">
+          <h3 class="text-white">Giveaway Roll</h3>
+          <p class="text-dim small margin-bottom">Rolling is manual.</p>
+          <button id="roll-now-btn" class="btn-gold interactive width-full">ROLL NOW</button>
+          <button id="reset-timer-btn" class="btn-red interactive width-full margin-top">Reset Giveaway Timer (12h)</button>
+
+          <hr style="opacity:.2; margin:16px 0;">
+
+          <h3 class="text-red">Giveaway Progress</h3>
+          <div class="grid-2 margin-bottom">
+            <input id="giveaway-input" type="number" step="0.1" placeholder="SOL Given" class="input-dark interactive">
+            <input id="giveaway-goal-input" type="number" step="0.1" placeholder="SOL Goal (default 25)" class="input-dark interactive">
+          </div>
+          <button id="update-giveaway-btn" class="btn-neon interactive width-full">Update Giveaway</button>
+        </div>
+
+        <div id="panel-entries" class="hidden">
+          <h3 class="text-white">Manage Entries</h3>
+          <p class="text-dim small margin-bottom">
+            Add wallets manually. Entries auto-calc: <b>1% = 100 entries</b>.
+          </p>
+
+          <div class="grid-2 margin-bottom">
+            <input id="entry-wallet" class="input-dark interactive" placeholder="Wallet address" />
+            <input id="entry-percent" class="input-dark interactive" type="number" step="0.01"
+              placeholder="% holding (e.g. 1.25)" />
+          </div>
+
+          <button id="add-entry-btn" class="btn-neon interactive width-full">Add / Update</button>
+
+          <div class="grid-2 margin-top">
+            <button id="clear-entries-btn" class="btn-red interactive width-full">Clear All</button>
+            <input id="entries-search" class="input-dark interactive width-full" placeholder="Search wallet…" />
+          </div>
+
+          <div class="entries-list-wrap margin-top">
+            <table class="entries-table">
+              <thead>
+                <tr>
+                  <th>Wallet</th>
+                  <th>%</th>
+                  <th>Entries</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="entries-tbody"></tbody>
+            </table>
+          </div>
+
+          <p class="text-dim small margin-top" id="entries-summary">Wallets: 0 • Total entries: 0</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="admin-trigger"></div>
+
+  <script src="script.js"></script>
+
+  <style>
+    .admin-tabs { display:flex; gap:10px; margin-bottom:14px; }
+    .tab-btn { flex:1; padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.35); color:#fff; cursor:pointer; }
+    .tab-btn.active { border-color: rgba(0,255,186,.45); box-shadow: 0 0 18px rgba(0,255,186,.12); }
+
+    .entries-list-wrap { max-height: 320px; overflow:auto; border-radius: 14px; border: 1px solid rgba(255,255,255,.08); }
+    .entries-table { width:100%; border-collapse: collapse; }
+    .entries-table th, .entries-table td { padding:10px; text-align:left; border-bottom: 1px solid rgba(255,255,255,.06); }
+    .entries-table th { position: sticky; top: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(8px); }
+    .mini-btn { padding:8px 10px; border-radius:10px; border:1px solid rgba(255,0,0,.35); background: rgba(255,0,0,.15); color:#fff; cursor:pointer; }
+  </style>
+</body>
+
+</html>
