@@ -1,8 +1,8 @@
 /**************************************************
  * SOLMAS Giveaway Script (GLOBAL + Realtime)
- * FIXES:
- * 1) Spinner animation improved (realistic long spin + smooth ease + settle)
- * 2) Admin spin now triggers animation on ALL clients (via global spinEvent)
+ * - Entries / Winner / Payout / SOL Progress / Timer Length / Next Roll are GLOBAL via Firebase Realtime DB
+ * - Admin auth remains client-side hash (same as your original)
+ * - Spinner lands centered on the selected winner (realistic overshoot + settle)
  **************************************************/
 
 // ================================
@@ -11,7 +11,7 @@
 const ADMIN_PASSWORD_HASH = "267623a30c7aa711126cd873179b8dbb6a5ffb15b72055735f8a7e8cfda24be4";
 
 // Put your CA text here
-const CA_DISPLAY_TEXT = "23dq9RgV7Rsq61WYZSADLqpVdJAmo4eTS44TeESKpump";
+const CA_DISPLAY_TEXT = "6fAE4skj7Uy4emPRUafCgasAsyQYTE7TQrdsTYnepump";
 
 // Entries formula
 // 1% holding = 100 entries
@@ -56,15 +56,8 @@ let state = {
   nextRollAt: null,
   rollIntervalMs: DEFAULT_ROLL_INTERVAL_MS,
   entries: [],      // { wallet, percent, entries }
-  lastWinner: null, // { wallet, percent, entries, ts, payoutTx? }
-
-  // NEW (GLOBAL): spin event to trigger animation on all clients
-  // spinEvent: { id, startedAt, durationMs, winnerWallet, winnerIndex, items:[{wallet,entries,percent?}] }
-  spinEvent: null
+  lastWinner: null  // { wallet, percent, entries, ts, payoutTx? }
 };
-
-// Tracks last processed spin event on THIS client (local only)
-let lastSeenSpinEventId = null;
 
 // ================================
 // DOM
@@ -168,8 +161,7 @@ function sharedSnapshotToState(remote) {
     nextRollAt: remote.nextRollAt ?? null,
     rollIntervalMs: Number(remote.rollIntervalMs ?? DEFAULT_ROLL_INTERVAL_MS),
     entries: Array.isArray(remote.entries) ? remote.entries : [],
-    lastWinner: remote.lastWinner ?? null,
-    spinEvent: remote.spinEvent ?? null
+    lastWinner: remote.lastWinner ?? null
   };
 
   state.isAdmin = isAdmin;
@@ -187,13 +179,13 @@ async function ensureRemoteInitialized() {
     nextRollAt: Date.now() + DEFAULT_ROLL_INTERVAL_MS,
     entries: [],
     lastWinner: null,
-    spinEvent: null,
     updatedAt: SV_TIME
   };
   await sharedRef.set(initial);
 }
 
 function saveShared(patch) {
+  // Only shared fields get written
   const payload = {
     ...patch,
     updatedAt: SV_TIME
@@ -213,15 +205,12 @@ async function init() {
 
   if (els.caText) els.caText.innerText = CA_DISPLAY_TEXT;
 
+  // Initialize remote + subscribe
   await ensureRemoteInitialized();
 
   sharedRef.on("value", (snap) => {
     if (!snap.exists()) return;
-
-    const prevSpinId = state.spinEvent?.id ?? null;
-
     sharedSnapshotToState(snap.val() || {});
-
     // Reflect remote in UI
     updateGiveawayUI();
     updateEntriesUI();
@@ -230,17 +219,6 @@ async function init() {
     updateTimerCurrentUI();
     if (state.lastWinner) renderWinner(state.lastWinner);
     updateRollCountdown();
-
-    // ✅ NEW: trigger spin animation for everyone
-    // If spinEvent changed (or first time) -> animate locally
-    const newSpinId = state.spinEvent?.id ?? null;
-    if (newSpinId && newSpinId !== lastSeenSpinEventId) {
-      lastSeenSpinEventId = newSpinId;
-      runSpinEvent(state.spinEvent);
-    } else if (newSpinId && newSpinId !== prevSpinId && newSpinId !== lastSeenSpinEventId) {
-      lastSeenSpinEventId = newSpinId;
-      runSpinEvent(state.spinEvent);
-    }
   });
 
   setInterval(updateRollCountdown, 1000);
@@ -281,6 +259,7 @@ async function handleLogin() {
     if (els.giveawayInput) els.giveawayInput.value = state.solGiven;
     if (els.giveawayGoalInput) els.giveawayGoalInput.value = state.solGoal;
 
+    // Prefill timer controls
     try {
       const ms = state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS;
       updateTimerInputsFromMs(ms);
@@ -306,6 +285,7 @@ function setAdminTab(which) {
 // EVENTS
 // ================================
 function setupEvents() {
+  // Admin open/close
   const trigger = document.getElementById("admin-trigger");
   trigger && (trigger.onclick = toggleAdmin);
 
@@ -315,6 +295,7 @@ function setupEvents() {
   const loginBtn = document.getElementById("login-btn");
   loginBtn && (loginBtn.onclick = () => handleLogin());
 
+  // Tabs
   els.tabControls && (els.tabControls.onclick = () => setAdminTab("controls"));
   els.tabEntries &&
     (els.tabEntries.onclick = () => {
@@ -322,7 +303,7 @@ function setupEvents() {
       renderEntriesTable();
     });
 
-  // Entries add/update (GLOBAL)
+  // Entries: add/update (GLOBAL)
   const addEntryBtn = document.getElementById("add-entry-btn");
   addEntryBtn &&
     (addEntryBtn.onclick = async () => {
@@ -357,7 +338,7 @@ function setupEvents() {
       if (els.entryPercent) els.entryPercent.value = "";
     });
 
-  // Entries clear all (GLOBAL)
+  // Entries: clear all (GLOBAL)
   const clearEntriesBtn = document.getElementById("clear-entries-btn");
   clearEntriesBtn &&
     (clearEntriesBtn.onclick = async () => {
@@ -369,13 +350,14 @@ function setupEvents() {
       await saveShared({ entries: [], lastWinner: null });
     });
 
+  // Entries: search
   els.entriesSearch && els.entriesSearch.addEventListener("input", renderEntriesTable);
 
   // Roll now (admin)
   const rollBtn = document.getElementById("roll-now-btn");
   rollBtn && (rollBtn.onclick = rollGiveawayManual);
 
-  // Reset timer (admin)
+  // Reset timer (admin) — resets interval to 12h and sets nextRollAt
   const resetTimerBtn = document.getElementById("reset-timer-btn");
   resetTimerBtn &&
     (resetTimerBtn.onclick = async () => {
@@ -416,7 +398,7 @@ function setupEvents() {
       alert("Giveaway progress updated ✅");
     });
 
-  // Update timer length (admin) — GLOBAL
+  // ✅ Update timer length (admin) — GLOBAL
   const updateTimerBtn = document.getElementById("update-timer-btn");
   updateTimerBtn &&
     (updateTimerBtn.onclick = async () => {
@@ -437,6 +419,7 @@ function setupEvents() {
       if (unit === "minutes") ms = val * 60 * 1000;
       if (unit === "hours") ms = val * 60 * 60 * 1000;
 
+      // minimum 10 seconds to avoid nonsense
       ms = Math.max(ms, 10 * 1000);
 
       await saveShared({
@@ -448,7 +431,7 @@ function setupEvents() {
       alert(`Timer updated: ${formatMs(ms)} ✅`);
     });
 
-  // Confirm payout (GLOBAL)
+  // ✅ Front-page confirm payout (password -> tx) — GLOBAL
   if (els.confirmPayoutBtn) {
     els.confirmPayoutBtn.onclick = async () => {
       if (!state.lastWinner) {
@@ -587,9 +570,7 @@ function updateTimerInputsFromMs(ms) {
 }
 
 function updateTimerCurrentUI() {
-  if (els.timerCurrent) {
-    els.timerCurrent.textContent = formatMs(state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS);
-  }
+  if (els.timerCurrent) els.timerCurrent.textContent = formatMs(state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS);
 }
 
 // ================================
@@ -666,156 +647,13 @@ function updateRollCountdown() {
   }
 }
 
-// ================================
-// SLIDER BASE RENDER
-// ================================
-function renderSlider() {
-  if (!els.track) return;
-
-  const sorted = [...state.entries].sort((a, b) => (b.entries || 0) - (a.entries || 0));
-  const top = sorted.slice(0, 200);
-  const renderList = [...top, ...top, ...top];
-
-  els.track.innerHTML = "";
-  renderList.forEach((e) => {
-    const item = document.createElement("div");
-    item.className = "slider-item";
-    item.innerHTML = `
-      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
-      <div class="small monospace">${e.entries} entries</div>
-    `;
-    els.track.appendChild(item);
-  });
-
-  els.track.style.transform = "translateX(0px)";
-  els.track.style.transition = "none";
-}
-
-/* ================================
- * ✅ NEW GLOBAL SPIN EVENT SYSTEM
- * - Admin writes spinEvent to Firebase
- * - Every client sees spinEvent.id change -> runs animation locally
- ================================ */
-
-function makeSpinEvent(winner, durationMs = 7200) {
-  // Build a "reel" that looks random but ends on winner
-  const pool = [...state.entries];
-  const SPIN_ITEMS = 140;
-  const WIN_INDEX = 110;
-
-  const items = [];
-  for (let i = 0; i < SPIN_ITEMS; i++) {
-    const pick = (i === WIN_INDEX)
-      ? winner
-      : pool[Math.floor(Math.random() * pool.length)];
-    // store minimal data needed for UI
-    items.push({ wallet: pick.wallet, entries: pick.entries, percent: pick.percent });
-  }
-
-  return {
-    id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
-    startedAt: Date.now(),
-    durationMs,
-    winnerWallet: winner.wallet,
-    winnerIndex: WIN_INDEX,
-    items
-  };
-}
-
-function runSpinEvent(ev) {
-  if (!ev || !els.track) return;
-
-  // If user loads mid-spin, run remaining time (or snap if almost done)
-  const now = Date.now();
-  const endAt = (ev.startedAt || now) + (ev.durationMs || 7000);
-  const remaining = Math.max(0, endAt - now);
-
-  // Rebuild reel exactly as admin published it
-  els.track.innerHTML = "";
-  for (let i = 0; i < ev.items.length; i++) {
-    const e = ev.items[i];
-    const item = document.createElement("div");
-    item.className = "slider-item";
-    if (i === ev.winnerIndex) item.id = "spin-target";
-    item.innerHTML = `
-      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
-      <div class="small monospace">${e.entries} entries</div>
-    `;
-    els.track.appendChild(item);
-  }
-
-  // Reset
-  els.track.style.transition = "none";
-  els.track.style.transform = "translateX(0px)";
-  els.track.offsetHeight;
-
-  const windowEl = document.querySelector(".slider-window");
-  const targetEl = document.getElementById("spin-target");
-  if (!windowEl || !targetEl) return;
-
-  // Measure true step (handles CSS gap/margins/responsive)
-  const all = els.track.querySelectorAll(".slider-item");
-  let step = 0;
-  if (all.length >= 2) step = Math.round(all[1].offsetLeft - all[0].offsetLeft);
-  if (!step) step = all[0].offsetWidth || 150;
-
-  const targetWidth = targetEl.offsetWidth || step;
-  const centerOffset = (windowEl.offsetWidth / 2) - (targetWidth / 2);
-
-  const finalTranslate = Math.round(-(ev.winnerIndex * step) + centerOffset);
-
-  // Better animation: long glide + micro-settle
-  // If joining late, shorten to remaining time
-  const mainTime = Math.max(300, Math.min(5600, remaining ? Math.min(5600, remaining - 650) : 5600));
-  const settleTime = Math.max(180, Math.min(650, remaining ? Math.min(650, remaining) : 650));
-
-  // Overshoot for realism
-  const overshoot = Math.round((Math.random() * 120) + 80) * (Math.random() < 0.5 ? -1 : 1);
-  const overshootTranslate = finalTranslate + overshoot;
-
-  // Hide winner card display while spinning (client-side visual)
-  els.winnerDisplay?.classList.remove("opacity-1");
-  els.winnerDisplay?.classList.add("opacity-0");
-
-  // If almost over, snap
-  if (remaining && remaining < 350) {
-    els.track.style.transition = "none";
-    els.track.style.transform = `translateX(${finalTranslate}px)`;
-    highlightTargetAndWinner();
-    return;
-  }
-
-  // Main spin
-  requestAnimationFrame(() => {
-    els.track.style.transition = `transform ${mainTime}ms cubic-bezier(0.08, 0.86, 0.12, 1)`;
-    els.track.style.transform = `translateX(${overshootTranslate}px)`;
-  });
-
-  // Settle
-  setTimeout(() => {
-    els.track.style.transition = `transform ${settleTime}ms cubic-bezier(0.20, 1.05, 0.22, 1)`;
-    els.track.style.transform = `translateX(${finalTranslate}px)`;
-  }, mainTime);
-
-  // Reveal/highlight
-  setTimeout(() => {
-    highlightTargetAndWinner();
-  }, mainTime + settleTime + 40);
-
-  function highlightTargetAndWinner() {
-    const t = document.getElementById("spin-target");
-    if (t) {
-      t.style.background = "rgba(0,255,186,0.22)";
-      t.style.boxShadow = "0 0 24px rgba(0,255,186,0.45)";
-    }
-    // winner card shows from global lastWinner (already synced),
-    // but force show if available
-    if (state.lastWinner) renderWinner(state.lastWinner);
-  }
+async function setNextRollFromInterval() {
+  const ms = state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS;
+  await saveShared({ nextRollAt: Date.now() + ms });
 }
 
 // ================================
-// ROLL GIVEAWAY (MANUAL, WEIGHTED) — GLOBAL + ANIMATES EVERYONE
+// ROLL GIVEAWAY (MANUAL, WEIGHTED) — GLOBAL
 // ================================
 async function rollGiveawayManual() {
   if (!state.isAdmin) {
@@ -849,10 +687,10 @@ async function rollGiveawayManual() {
   }
   if (!winner) winner = state.entries[state.entries.length - 1];
 
-  // Create global spin event (this makes ALL clients animate)
-  const spinEvent = makeSpinEvent(winner, 7200);
+  // Spin animation
+  spinSliderToWinner(winner);
 
-  // Save winner globally + reset nextRollAt + publish spinEvent
+  // Save winner globally + reset nextRollAt
   const newWinner = {
     wallet: winner.wallet,
     percent: winner.percent,
@@ -862,15 +700,114 @@ async function rollGiveawayManual() {
   };
 
   const ms = state.rollIntervalMs || DEFAULT_ROLL_INTERVAL_MS;
-
   await saveShared({
     lastWinner: newWinner,
-    nextRollAt: Date.now() + ms,
-    spinEvent
+    nextRollAt: Date.now() + ms
   });
 
-  // Locally mark as not spinning after animation time
-  setTimeout(() => { state.isSpinning = false; }, 8000);
+  setTimeout(() => { state.isSpinning = false; }, 6500);
+}
+
+// ================================
+// SLIDER (realistic centered landing)
+// ================================
+function renderSlider() {
+  if (!els.track) return;
+
+  const sorted = [...state.entries].sort((a, b) => (b.entries || 0) - (a.entries || 0));
+  const top = sorted.slice(0, 200);
+  const renderList = [...top, ...top, ...top];
+
+  els.track.innerHTML = "";
+  renderList.forEach((e) => {
+    const item = document.createElement("div");
+    item.className = "slider-item";
+    item.innerHTML = `
+      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
+      <div class="small monospace">${e.entries} entries</div>
+    `;
+    els.track.appendChild(item);
+  });
+
+  els.track.style.transform = "translateX(0px)";
+}
+
+function spinSliderToWinner(winner) {
+  if (!els.track) return;
+
+  // Hide winner display while spinning
+  els.winnerDisplay?.classList.remove("opacity-1");
+  els.winnerDisplay?.classList.add("opacity-0");
+
+  // Build a realistic reel with the winner placed at a known index
+  const pool = [...state.entries]
+    .sort((a, b) => (b.entries || 0) - (a.entries || 0))
+    .slice(0, 500);
+
+  const items = [];
+  for (let i = 0; i < 40; i++) items.push(pool[Math.floor(Math.random() * pool.length)]);
+  const WIN_INDEX = items.length;
+  items.push(winner); // exact target
+  for (let i = 0; i < 6; i++) items.push(pool[Math.floor(Math.random() * pool.length)]);
+
+  // Render
+  els.track.innerHTML = "";
+  items.forEach((e, idx) => {
+    const item = document.createElement("div");
+    item.className = "slider-item";
+    if (idx === WIN_INDEX) item.id = "spin-target";
+    item.innerHTML = `
+      <div class="bold text-white">${shortenWallet(e.wallet)}</div>
+      <div class="small monospace">${e.entries} entries</div>
+    `;
+    els.track.appendChild(item);
+  });
+
+  const windowEl = document.querySelector(".slider-window");
+  const viewWidth = windowEl ? windowEl.clientWidth : 600;
+
+  const targetEl = document.getElementById("spin-target");
+  if (!targetEl) return;
+
+  // Start at 0
+  els.track.style.transition = "none";
+  els.track.style.transform = "translateX(0px)";
+  els.track.offsetHeight; // force reflow
+
+  // Desired translate so target is centered in window
+  const targetCenter = targetEl.offsetLeft + (targetEl.offsetWidth / 2);
+  const desiredCenter = viewWidth / 2;
+  const finalTranslate = Math.round(desiredCenter - targetCenter);
+
+  // Overshoot for realism, then settle back
+  const overshoot = Math.round((Math.random() * 70) + 35) * (Math.random() < 0.5 ? -1 : 1);
+  const overshootTranslate = finalTranslate + overshoot;
+
+  requestAnimationFrame(() => {
+    els.track.style.transition = "transform 5.6s cubic-bezier(0.08, 0.85, 0.12, 1)";
+    els.track.style.transform = `translateX(${overshootTranslate}px)`;
+  });
+
+  setTimeout(() => {
+    els.track.style.transition = "transform 0.65s cubic-bezier(0.2, 1, 0.2, 1)";
+    els.track.style.transform = `translateX(${finalTranslate}px)`;
+  }, 5600);
+
+  setTimeout(() => {
+    // Winner will be rendered by realtime listener, but render immediately too
+    renderWinner({
+      wallet: winner.wallet,
+      percent: winner.percent,
+      entries: winner.entries,
+      payoutTx: null
+    });
+
+    const t = document.getElementById("spin-target");
+    if (t) {
+      t.style.background = "rgba(0,255,186,0.2)";
+      t.style.boxShadow = "0 0 20px rgba(0,255,186,0.35)";
+    }
+  }, 6300);
 }
 
 // ================================
@@ -881,6 +818,7 @@ function initChristmasCountdownUTC() {
     const now = new Date();
     const year = now.getUTCFullYear();
 
+    // Dec 25 00:00:00 UTC
     let target = new Date(Date.UTC(year, 11, 25, 0, 0, 0));
     if (now.getTime() > target.getTime()) {
       target = new Date(Date.UTC(year + 1, 11, 25, 0, 0, 0));
@@ -909,10 +847,78 @@ function initChristmasCountdownUTC() {
 async function safeFetchMarketCap() {
   try {
     const el = document.getElementById("mcap-value");
-    const change = document.getElementById("price-change");
-    if (el && !el.innerText) el.innerText = "$0.00";
-    if (change && !change.innerText) change.innerText = "—";
-  } catch {}
+    const changeEl = document.getElementById("price-change");
+    if (!el || !changeEl) return;
+
+    const token = String(CA_DISPLAY_TEXT || "").trim();
+    if (!token || token === "YOUR_PUMPFUN_CA_OR_MINT_HERE") {
+      // fallback if CA not set
+      el.innerText = "$0.00";
+      changeEl.innerText = "Set CA to load market cap";
+      return;
+    }
+
+    // DexScreener token pairs endpoint (Solana)
+    // Returns an array of pairs with fields like marketCap, fdv, liquidity, priceChange, etc.
+    const url = `https://api.dexscreener.com/tokens/v1/solana/${encodeURIComponent(token)}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`DexScreener HTTP ${res.status}`);
+    const pairs = await res.json();
+
+    if (!Array.isArray(pairs) || pairs.length === 0) {
+      el.innerText = "$0.00";
+      changeEl.innerText = "No DexScreener data";
+      return;
+    }
+
+    // pick best pair by highest liquidity.usd
+    let best = pairs[0];
+    for (const p of pairs) {
+      const liq = Number(p?.liquidity?.usd ?? 0);
+      const bestLiq = Number(best?.liquidity?.usd ?? 0);
+      if (liq > bestLiq) best = p;
+    }
+
+    const mc = Number(best?.marketCap ?? 0);
+    const fdv = Number(best?.fdv ?? 0);
+    const show = mc > 0 ? mc : fdv;
+
+    el.innerText = `$${formatCompactUSD(show)}`;
+
+    const ch24 = best?.priceChange?.h24;
+    if (ch24 === undefined || ch24 === null) {
+      changeEl.innerText = best?.url ? "View on DexScreener" : "—";
+    } else {
+      const pct = Number(ch24);
+      if (Number.isFinite(pct)) {
+        changeEl.innerText = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% (24h)`;
+      } else {
+        changeEl.innerText = "—";
+      }
+    }
+  } catch (e) {
+    // don't spam console for end users, but keep a hint for debugging
+    try { console.debug("Marketcap fetch failed:", e); } catch {}
+  }
+}
+
+// Format large numbers like 1234567 -> 1.23M
+function formatCompactUSD(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "0.00";
+  const abs = Math.abs(n);
+
+  const fmt = (v, suf) => {
+    // keep 2 decimals for smaller, 2 for M/B as well
+    const s = v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+    return `${s}${suf}`;
+  };
+
+  if (abs >= 1e12) return fmt(n / 1e12, "T");
+  if (abs >= 1e9) return fmt(n / 1e9, "B");
+  if (abs >= 1e6) return fmt(n / 1e6, "M");
+  if (abs >= 1e3) return fmt(n / 1e3, "K");
+  return n.toFixed(2);
 }
 
 // ================================
@@ -1014,4 +1020,3 @@ function shortenWallet(w) {
   if (!w) return "—";
   return `${w.slice(0, 4)}…${w.slice(-4)}`;
 }
-
